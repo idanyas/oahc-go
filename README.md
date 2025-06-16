@@ -137,7 +137,7 @@ You now have all the information needed. Let's fill out the project's environmen
         ```bash
         docker compose -f compose.yaml logs -f
         ```
-    -   *Detailed JSON logs will appear in the `./logs` directory on your machine.*
+    -   *Detailed JSON logs will appear in the `./log` directory on your machine.*
 
 3.  **Stopping the Service**:
     -   To stop the application, run:
