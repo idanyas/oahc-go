@@ -1,115 +1,146 @@
-# OCI ARM Host Capacity Finder (Go Version)
+# 🤖 OCI ARM Host Capacity
 
-This project is a Go rewrite of the popular `hitrov/oci-arm-host-capacity` PHP script. It helps you acquire an "Always Free" Oracle Cloud Infrastructure (OCI) Ampere A1 compute instance by repeatedly trying to create one until capacity is available.
+A lightweight, modern, and efficient Go application that tirelessly scans Oracle Cloud Infrastructure (OCI) for available **"Always Free" Ampere A1** compute capacity.
 
-The script is designed to be run as a cron job or a scheduled task. When it detects that OCI has freed up capacity in your home region, it will automatically create an instance with your specified configuration and can notify you via Telegram.
+When capacity is found, it automatically provisions an instance based on your configuration and sends you a Telegram notification. Designed to be run as a persistent service using Docker, it's the simplest way to secure your OCI ARM instance.
 
-This version is a single, self-contained binary with no external dependencies, making it fast, secure, and easy to deploy.
+---
 
-## Features
+### ✨ Features
 
-- Periodically checks for available OCI capacity for Ampere A1 (or other shapes).
-- Automatically creates an instance upon success.
-- Supports custom shapes, OCPU count, and memory.
-- Can create instances from a backup boot volume.
-- Optional Telegram notifications on success.
-- Handles OCI rate limiting (`TooManyRequests`) by backing off automatically.
-- Zero third-party library dependencies for core functionality.
-- Configuration via a simple `.env` file and/or environment variables.
+-   🤖 **Automated Provisioning**: Runs 24/7 and automatically creates an instance the moment capacity is available.
+-   ⚙️ **Flexible Configuration**: Define your desired instance shape, OCPU count, memory, and boot volume.
+-   🔔 **Telegram Notifications**: Get an instant alert on success with all the details of your new instance.
+-   🧠 **Intelligent Backoff**: Automatically handles OCI API rate limits by waiting and retrying.
+-   🐳 **Docker First**: Optimized for a simple and reliable deployment with Docker Compose.
+-   🔒 **Efficient & Secure**: Compiled into a single, small binary for minimal overhead and attack surface.
 
-## Prerequisites
+### 🤔 How It Works
 
-1.  A working Go environment (1.18+ recommended).
-2.  An Oracle Cloud Infrastructure account.
-3.  An OCI API key pair. Follow the official [OCI documentation](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/apisigningkey.htm) to generate one.
+1.  **Load Config**: Reads your OCI and instance settings from the `.env` file.
+2.  **Check Existing**: Checks if you've already reached your maximum desired instances. If so, it exits.
+3.  **Scan & Create**: It loops through the availability domains in your region, attempting to create an instance.
+    -   *On "Out of Capacity"*: It logs the message and immediately tries the next domain.
+    -   *On "Too Many Requests"*: It waits for a dynamically increasing period before trying again.
+    -   *On Success*: It creates the instance, sends a Telegram notification, and exits gracefully.
 
-## Installation
+---
 
-1.  **Clone the repository:**
+## 🚀 Setup and Configuration
 
+This guide will walk you through setting up your OCI credentials and configuring the project to run with Docker.
+
+### ✅ Prerequisites
+
+*   An [Oracle Cloud Infrastructure](https://cloud.oracle.com/) account.
+*   [Docker](https://docs.docker.com/get-docker/) & [Docker Compose](https://docs.docker.com/compose/install/) installed.
+*   [OCI CLI](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm) & [`jq`](https://stedolan.github.io/jq/download/) installed.
+
+### Step 1: Get Primary Credentials from OCI
+
+1.  **Navigate to API Keys**:
+    -   In the OCI Console, go to **Profile ➡️ My Profile ➡️ API Keys**.
+
+2.  **Add a New API Key**:
+    -   Click **Add API Key** and select **Generate API Key Pair**.
+    -   Click **Download Private Key** and save the file as `oci_api_key.pem` in this project's folder.
+
+3.  **Copy from Configuration Preview**:
+    -   **Do not close the window!** Look for the **Configuration File Preview** text box.
+    -   From this preview, copy the following values and save them in a temporary text file:
+        -   `user` (your User OCID)
+        -   `fingerprint`
+        -   `tenancy` (your Tenancy OCID)
+        -   `region` (e.g., `eu-frankfurt-1`)
+
+### Step 2: Configure the OCI CLI
+
+To find the remaining IDs, your OCI CLI needs to be authenticated. We'll do this by creating a configuration file manually.
+
+1.  **Create the OCI directory and config file**:
     ```bash
-    git clone https://github.com/idanyas/oahc-go.git
-    cd oahc-go
+    mkdir -p ~/.oci
+    touch ~/.oci/config
     ```
 
-2.  **Build the binary:**
-    ```bash
-    go build
+2.  **Edit the config file** (`~/.oci/config`) and paste the following template into it.
+
+    ```ini
+    [DEFAULT]
+    user=
+    fingerprint=
+    tenancy=
+    region=
+    key_file=
     ```
-    This will create an executable file named `oahc-go` (or `oahc-go.exe` on Windows) in the current directory.
 
-## Configuration
+3.  **Fill in the template** with the values you copied in Step 1.
+    -   For `key_file`, you must provide the **full, absolute path** to the `oci_api_key.pem` file you downloaded.
+    -   *Example `key_file`: `/home/youruser/projects/oahc-go/oci_api_key.pem`*
 
-Configuration is managed through a `.env` file.
+### Step 3: Find Resource IDs with the CLI
 
-1.  **Copy the example file:**
+Now that your CLI is authenticated, you can easily find the remaining IDs.
 
+1.  **Set your Tenancy OCID** in your terminal for convenience:
+    ```bash
+    # Paste your Tenancy OCID here
+    export TENANCY_ID="ocid1.tenancy.oc1..xxxxxx"
+    ```
+
+2.  **Run the following commands** to find an Image and Subnet ID. Pick one of each from the output.
+
+    ```bash
+    # Find an IMAGE_ID (look for Ubuntu or Oracle Linux aarch64)
+    oci compute image list --all -c "$TENANCY_ID" | jq -r '.data[] | select(.["operating-system"] != "Windows") | select(.["display-name"] | contains("aarch64")) | "\(.["display-name"]): \(.id)"'
+
+    # Find a SUBNET_ID
+    oci network subnet list -c "$TENANCY_ID" | jq -r '.data[] | "\(.["display-name"]): \(.id)"'
+    ```
+
+### Step 4: Configure the Project `.env` File
+
+You now have all the information needed. Let's fill out the project's environment file.
+
+1.  **Create the `.env` file**:
     ```bash
     cp .env.example .env
     ```
+2.  **Open and edit `.env`**, filling in all the required values you've gathered from the previous steps.
 
-2.  **Edit the `.env` file** with your specific OCI details. All parameters are required unless marked as optional.
+| Variable | Description | Required |
+| :--- | :--- | :---: |
+| `OCI_USER_ID` | The `user` value from Step 1. | ✅ |
+| `OCI_TENANCY_ID` | The `tenancy` value from Step 1. | ✅ |
+| `OCI_KEY_FINGERPRINT`| The `fingerprint` value from Step 1. | ✅ |
+| `OCI_REGION` | The `region` value from Step 1. | ✅ |
+| `OCI_PRIVATE_KEY_FILENAME`| **Must be `/app/oci_api_key.pem`**. | ✅ |
+| `OCI_SUBNET_ID` | An OCID from Step 3. | ✅ |
+| `OCI_IMAGE_ID` | An OCID from Step 3. | ✅ |
+| `OCI_SSH_PUBLIC_KEY`| The **full content** of your public SSH key (`~/.ssh/id_rsa.pub`). | ✅ |
+| `OCI_AVAILABILITY_DOMAIN` | Specific AD to try. *Leave empty to try all*. | |
+| `TELEGRAM_BOT_API_KEY` | Your Telegram Bot API key for notifications. | |
+| `TELEGRAM_USER_ID` | Your Telegram User/Chat ID. | |
 
-    - `OCI_REGION`: Your OCI home region (e.g., `us-ashburn-1`).
-    - `OCI_USER_ID`: Your OCI User OCID.
-    - `OCI_TENANCY_ID`: Your Tenancy OCID.
-    - `OCI_KEY_FINGERPRINT`: The fingerprint of your uploaded API public key.
-    - `OCI_PRIVATE_KEY_FILENAME`: The absolute path to your API private key (`.pem`) file.
-    - `OCI_SUBNET_ID`: The OCID of the subnet where the instance will be created.
-    - `OCI_IMAGE_ID`: The OCID of the image to use for the instance. (Required if not using `OCI_BOOT_VOLUME_ID`).
-    - `OCI_SSH_PUBLIC_KEY`: The full content of your public SSH key (e.g., from `~/.ssh/id_rsa.pub`). **Must be on a single line.**
-    - `OCI_SHAPE`: (Optional, defaults to `VM.Standard.A1.Flex`) The shape of the instance.
-    - `OCI_OCPUS`: (Optional, defaults to `4`) The number of OCPUs.
-    - `OCI_MEMORY_IN_GBS`: (Optional, defaults to `24`) The amount of memory in GB.
-    - `OCI_AVAILABILITY_DOMAIN`: (Optional) A specific availability domain to try. If empty, the script will try all ADs in your region. You can also provide a JSON array of strings: `["AD_1_OCID", "AD_2_OCID"]`.
-    - `OCI_BOOT_VOLUME_ID`: (Optional) The OCID of an existing boot volume to create the instance from.
-    - `OCI_BOOT_VOLUME_SIZE_IN_GBS`: (Optional) The size of the boot volume in GBs (minimum 50).
-    - `OCI_MAX_INSTANCES`: (Optional, defaults to `1`) The maximum number of instances of this shape to allow before stopping.
-    - `TELEGRAM_BOT_API_KEY`: (Optional) Your Telegram Bot API key for notifications.
-    - `TELEGRAM_USER_ID`: (Optional) Your Telegram User/Chat ID for notifications.
-    - `OCI_JSON_LOG_PATH`: (Optional) Path to a file for logging API responses in JSON format. It logs all instance creation attempts (success or failure) and any other failed API calls. Example: `/var/log/oahc-go/api.log`. Note: Ensure the running user has write permissions to the specified path.
+---
 
-## Running the Script
+## 🏃‍♂️ Running with Docker
 
-Execute the binary from your terminal:
+1.  **Start the Service**:
+    -   Build and run the container in the background.
+        ```bash
+        docker compose -f compose.yaml up --build -d
+        ```
 
-```bash
-./oahc-go
-```
+2.  **Check the Logs**:
+    -   See the application's real-time progress.
+        ```bash
+        docker compose -f compose.yaml logs -f
+        ```
+    -   *Detailed JSON logs will appear in the `./logs` directory on your machine.*
 
-If your `.env` file is located elsewhere, you can specify its path with the `-envfile` flag:
-
-```bash
-./oahc-go -envfile /path/to/my.env
-```
-
-The script will log its progress to standard output. If it finds capacity, it will create the instance, print the details, and exit. If not, it will print the "Out of host capacity" message for each availability domain it tries.
-
-## Periodic Job Setup (Cron)
-
-To run the script automatically, set up a cron job.
-
-1.  Open your crontab for editing:
-
-    ```bash
-    crontab -e
-    ```
-
-2.  Add a new line to run the script every minute. Make sure to use absolute paths for the binary and its log file.
-
-    ```cron
-    * * * * * /path/to/your/oahc-go/oahc-go >> /path/to/your/oahc-go/oahc.log 2>&1
-    ```
-
-    This will run the script every minute and append its output to `oahc.log`.
-
-## How It Works
-
-1.  **Load Config:** Reads your settings from the `.env` file.
-2.  **Check Existing Instances:** Queries OCI to see if you already have an instance of the target shape running. If you've reached `OCI_MAX_INSTANCES`, it exits.
-3.  **Find Availability Domain (AD):** Determines which ADs to check.
-4.  **Loop and Create:** Iterates through the ADs and sends a `CreateInstance` API request for each one.
-    - **On Success:** The instance is created. The script prints the details, sends a Telegram notification (if configured), and exits.
-    - **On "Out of host capacity":** The script logs the message, waits a few seconds, and moves to the next AD.
-    - **On "Too Many Requests":** The script logs a message and creates a temporary file to prevent it from running again for a configurable amount of time (default 5 minutes). This respects OCI's rate limits.
-    - **On Other Errors:** The script exits with a fatal error, as this likely indicates a configuration problem that needs to be fixed.
+3.  **Stopping the Service**:
+    -   To stop the application, run:
+        ```bash
+        docker compose -f compose.yaml down
+        ```
