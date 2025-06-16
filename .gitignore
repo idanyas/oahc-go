@@ -1,0 +1,29 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Go workspace file
+go.work
+
+# Local binary
+oahc-go
+oahc-go.exe
+
+# Environment files
+.env
+*.env.local
+
+# Log files
+*.log
+
+# Temp files
+too_many_requests_waiter.txt
