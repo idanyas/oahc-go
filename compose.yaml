@@ -1,8 +1,12 @@
 services:
   oahc-go:
-    build: .
+    image: ghcr.io/idanyas/oahc-go:latest
+    restart: always
     env_file:
       - ./.env
     volumes:
-      - ./oci.pem:/app/oci_api_key.pem
-      - ./log:/var/log/oahc-go
+      # Mount your local OCI private key into the container.
+      # The path on the right (/app/oci_api_key.pem) MUST match the OCI_PRIVATE_KEY_FILENAME in your .env file.
+      - ./oci_api_key.pem:/app/oci_api_key.pem:ro
+      # Mount a local directory to store the JSON logs from inside the container.
+      - ./logs:/var/log/oahc-go
