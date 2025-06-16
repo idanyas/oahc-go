@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  oahc-go:
+    build: .
+    env_file:
+      - ./.env
+    volumes:
+      - ./oci_api_key.pem:/app/oci_api_key.pem
+      - ./log:/var/log/oahc-go

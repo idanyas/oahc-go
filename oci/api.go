@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/idanyas/oahc-go/config"
@@ -83,6 +86,17 @@ func (c *Client) buildAndDo(method, path string, queryParams url.Values, body in
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
+	// If configured, log specific API responses to a file.
+	// We log all instance creation attempts, and all other failed API calls.
+	if c.cfg.JSONLogPath != "" {
+		isCreateInstance := method == http.MethodPost && path == "/instances/"
+		isFailedResponse := resp.StatusCode < 200 || resp.StatusCode >= 300
+
+		if isCreateInstance || isFailedResponse {
+			go logResponseToFile(c.cfg.JSONLogPath, resp.Request.Method, resp.Request.URL.String(), resp.StatusCode, respBody)
+		}
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		apiErr := &APIError{StatusCode: resp.StatusCode}
 		// Try to unmarshal into the structured error format
@@ -95,6 +109,43 @@ func (c *Client) buildAndDo(method, path string, queryParams url.Values, body in
 	}
 
 	return respBody, nil
+}
+
+// logResponseToFile appends the details of an API response to the specified log file.
+func logResponseToFile(path, method, url string, statusCode int, body []byte) {
+	// Ensure the directory exists before trying to write the file.
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("Warning: could not create log directory %s: %v", dir, err)
+		return
+	}
+
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Printf("Warning: could not open API log file %s: %v", path, err)
+		return
+	}
+	defer file.Close()
+
+	var prettyBody bytes.Buffer
+	logEntry := ""
+	if json.Indent(&prettyBody, body, "", "  ") == nil {
+		logEntry = prettyBody.String()
+	} else {
+		logEntry = string(body) // Fallback for non-JSON content
+	}
+
+	logLine := fmt.Sprintf("--- %s ---\n[%s] %s | Status: %d\n%s\n\n",
+		time.Now().Format(time.RFC3339),
+		method,
+		url,
+		statusCode,
+		logEntry,
+	)
+
+	if _, err := file.WriteString(logLine); err != nil {
+		log.Printf("Warning: failed to write to API log file %s: %v", path, err)
+	}
 }
 
 // ListInstances fetches the list of compute instances.

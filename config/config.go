@@ -34,7 +34,9 @@ type Config struct {
 	TelegramUserID    string
 
 	// App behavior
-	TooManyRequestsWait int
+	BackoffInitialSeconds int
+	BackoffMaxSeconds     int
+	JSONLogPath           string // Optional
 }
 
 // Load reads configuration from a .env file and environment variables.
@@ -70,6 +72,7 @@ func Load(path string) (*Config, error) {
 	cfg.Shape = getValue("OCI_SHAPE")
 	cfg.SSHKey = getValue("OCI_SSH_PUBLIC_KEY")
 	cfg.BootVolumeID = getValue("OCI_BOOT_VOLUME_ID")
+	cfg.JSONLogPath = getValue("OCI_JSON_LOG_PATH")
 
 	cfg.TelegramBotAPIKey = getValue("TELEGRAM_BOT_API_KEY")
 	cfg.TelegramUserID = getValue("TELEGRAM_USER_ID")
@@ -87,8 +90,11 @@ func Load(path string) (*Config, error) {
 	if val := getValue("OCI_BOOT_VOLUME_SIZE_IN_GBS"); val != "" {
 		cfg.BootVolumeSizeGbs, _ = strconv.Atoi(val)
 	}
-	if val := getValue("TOO_MANY_REQUESTS_TIME_WAIT"); val != "" {
-		cfg.TooManyRequestsWait, _ = strconv.Atoi(val)
+	if val := getValue("BACKOFF_INITIAL_SECONDS"); val != "" {
+		cfg.BackoffInitialSeconds, _ = strconv.Atoi(val)
+	}
+	if val := getValue("BACKOFF_MAX_SECONDS"); val != "" {
+		cfg.BackoffMaxSeconds, _ = strconv.Atoi(val)
 	}
 
 	return cfg, nil
@@ -131,7 +137,8 @@ func defaults(c *Config) {
 	c.OCPUs = 4
 	c.MemoryInGBs = 24
 	c.MaxInstances = 1
-	c.TooManyRequestsWait = 300 // 5 minutes
+	c.BackoffInitialSeconds = 2 // Start with a 2-second backoff
+	c.BackoffMaxSeconds = 360   // 6 minutes
 }
 
 // readEnvFile parses a .env file and returns a map of key-value pairs.

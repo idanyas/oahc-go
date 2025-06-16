@@ -6,21 +6,20 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/idanyas/oahc-go/backoff"
 	"github.com/idanyas/oahc-go/config"
 	"github.com/idanyas/oahc-go/notifier"
 	"github.com/idanyas/oahc-go/oci"
 )
 
-const tooManyRequestsWaiterFile = "too_many_requests_waiter.txt"
-
 func main() {
 	envFile := flag.String("envfile", ".env", "Path to the environment file")
 	flag.Parse()
+
+	log.Println("Starting OCI Capacity Finder...")
 
 	cfg, err := config.Load(*envFile)
 	if err != nil {
@@ -37,88 +36,94 @@ func main() {
 	}
 
 	client := oci.NewClient(cfg, signer)
+	backoffManager := backoff.NewManager(cfg)
 
-	// Handle "Too Many Requests" waiter logic
-	if err := checkWaiter(); err != nil {
-		log.Println(err)
-		return
-	}
+	// Main infinite loop to continuously check for capacity
+	for {
+		backoffManager.Wait()
 
-	instances, err := client.ListInstances()
-	if err != nil {
-		log.Fatalf("Failed to list instances: %v", err)
-	}
-
-	existingInstances := 0
-	for _, instance := range instances {
-		if instance.Shape == cfg.Shape && instance.LifecycleState != "TERMINATED" {
-			existingInstances++
-		}
-	}
-
-	if existingInstances >= cfg.MaxInstances {
-		log.Printf("Already have %d instance(s) of shape %s. Maximum is %d. Exiting.", existingInstances, cfg.Shape, cfg.MaxInstances)
-		return
-	}
-
-	log.Println("Starting search for available capacity...")
-
-	availabilityDomains, err := getAvailabilityDomains(client, cfg)
-	if err != nil {
-		log.Fatalf("Failed to get availability domains: %v", err)
-	}
-
-	for _, ad := range availabilityDomains {
-		log.Printf("Trying Availability Domain: %s", ad)
-		instanceDetails, err := client.CreateInstance(ad)
+		instances, err := client.ListInstances()
 		if err != nil {
-			var apiErr *oci.APIError
-			if errors.As(err, &apiErr) {
-				// Specific OCI API error
-				if apiErr.StatusCode == 500 && strings.Contains(apiErr.Message, "Out of host capacity") {
-					log.Printf("Out of host capacity in %s. Trying next...", ad)
-					time.Sleep(16 * time.Second) // Mimic original script's sleep
-					continue
-				}
-				if apiErr.StatusCode == 429 || apiErr.Code == "TooManyRequests" {
-					log.Printf("Too many requests, backing off for %d seconds. Error: %s", cfg.TooManyRequestsWait, apiErr.Message)
-					if err := setWaiter(cfg.TooManyRequestsWait); err != nil {
-						log.Printf("Warning: failed to set waiter file: %v", err)
+			log.Printf("ERROR: Failed to list instances: %v. Retrying in 30s...", err)
+			time.Sleep(30 * time.Second)
+			continue
+		}
+
+		existingInstances := 0
+		for _, instance := range instances {
+			if instance.Shape == cfg.Shape && instance.LifecycleState != "TERMINATED" {
+				existingInstances++
+			}
+		}
+
+		if existingInstances >= cfg.MaxInstances {
+			log.Printf("Target instance count (%d) reached. Exiting.", cfg.MaxInstances)
+			return
+		}
+
+		availabilityDomains, err := getAvailabilityDomains(client, cfg)
+		if err != nil {
+			log.Printf("ERROR: Failed to get availability domains: %v. Retrying in 30s...", err)
+			time.Sleep(30 * time.Second)
+			continue
+		}
+
+		tmrHitInCycle := false
+		for _, ad := range availabilityDomains {
+			instanceDetails, err := client.CreateInstance(ad)
+			if err != nil {
+				var apiErr *oci.APIError
+				if errors.As(err, &apiErr) {
+					if apiErr.StatusCode == 429 || apiErr.Code == "TooManyRequests" {
+						log.Printf("Checking %s: Too Many Requests.", ad)
+						tmrHitInCycle = true
+						backoffManager.HandleTMR()
+						break
 					}
-					// Exit because we should wait before the next run.
-					return
+					if apiErr.StatusCode == 500 && strings.Contains(apiErr.Message, "Out of host capacity") {
+						log.Printf("Checking %s: Out of capacity.", ad)
+						continue
+					}
+				}
+				log.Printf("Checking %s: Unrecoverable API Error: %v", ad, err)
+				tmrHitInCycle = true
+				break
+			}
+
+			// --- SUCCESS ---
+			log.Printf("Checking %s: Success! Instance created.", ad)
+			prettyDetails, _ := json.MarshalIndent(instanceDetails, "", "  ")
+
+			// Full message for local log
+			logSuccessMessage := fmt.Sprintf("Successfully created instance!\n%s", string(prettyDetails))
+			log.Println(logSuccessMessage)
+
+			// Send notification (JSON only)
+			if cfg.TelegramBotAPIKey != "" && cfg.TelegramUserID != "" {
+				telegramMessage := string(prettyDetails)
+				tgNotifier := notifier.NewTelegramNotifier(cfg.TelegramBotAPIKey, cfg.TelegramUserID)
+				if err := tgNotifier.Notify(telegramMessage); err != nil {
+					log.Printf("Warning: failed to send Telegram notification: %v", err)
+				} else {
+					log.Println("Successfully sent Telegram notification.")
 				}
 			}
-			// For other errors, exit as it's likely a config issue
-			log.Fatalf("Failed to create instance in %s: %v", ad, err)
+
+			backoffManager.Reset()
+			return
 		}
 
-		// Success!
-		prettyDetails, _ := json.MarshalIndent(instanceDetails, "", "  ")
-		successMessage := fmt.Sprintf("Successfully created instance!\n%s", string(prettyDetails))
-		log.Println(successMessage)
-
-		// Send notification if configured
-		if cfg.TelegramBotAPIKey != "" && cfg.TelegramUserID != "" {
-			tgNotifier := notifier.NewTelegramNotifier(cfg.TelegramBotAPIKey, cfg.TelegramUserID)
-			if err := tgNotifier.Notify(successMessage); err != nil {
-				log.Printf("Warning: failed to send Telegram notification: %v", err)
-			} else {
-				log.Println("Successfully sent Telegram notification.")
-			}
+		// After trying all ADs, reset backoff if no TMR was hit.
+		if !tmrHitInCycle {
+			backoffManager.Reset()
+			// Add a minimal pacing delay to prevent tight-looping when capacity is simply unavailable.
+			time.Sleep(2 * time.Second)
 		}
-
-		// We are done, remove waiter file if it exists and exit
-		_ = removeWaiter()
-		return
 	}
-
-	log.Println("No capacity found in any of the checked availability domains.")
 }
 
 func getAvailabilityDomains(client *oci.Client, cfg *config.Config) ([]string, error) {
 	if cfg.AvailabilityDomain != "" {
-		// OCI_AVAILABILITY_DOMAIN can be a single string or a JSON array of strings
 		if strings.HasPrefix(cfg.AvailabilityDomain, "[") {
 			var ads []string
 			if err := json.Unmarshal([]byte(cfg.AvailabilityDomain), &ads); err != nil {
@@ -129,7 +134,6 @@ func getAvailabilityDomains(client *oci.Client, cfg *config.Config) ([]string, e
 		return []string{cfg.AvailabilityDomain}, nil
 	}
 
-	log.Println("OCI_AVAILABILITY_DOMAIN not set, fetching list from OCI...")
 	ociAds, err := client.ListAvailabilityDomains()
 	if err != nil {
 		return nil, err
@@ -139,49 +143,4 @@ func getAvailabilityDomains(client *oci.Client, cfg *config.Config) ([]string, e
 		adNames = append(adNames, ad.Name)
 	}
 	return adNames, nil
-}
-
-func getWaiterFilePath() string {
-	return filepath.Join(os.TempDir(), tooManyRequestsWaiterFile)
-}
-
-func checkWaiter() error {
-	path := getWaiterFilePath()
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil // File doesn't exist, we can proceed
-	}
-	if err != nil {
-		return fmt.Errorf("could not read waiter file: %w", err)
-	}
-
-	waitUntil, err := time.Parse(time.RFC3339, string(data))
-	if err != nil {
-		// If file is corrupt, remove it and proceed
-		_ = removeWaiter()
-		return nil
-	}
-
-	if time.Now().Before(waitUntil) {
-		return fmt.Errorf("waiter is active, will not run until %s (in %s)", waitUntil.Format(time.Kitchen), time.Until(waitUntil).Round(time.Second))
-	}
-
-	// Wait time has passed, remove the file
-	_ = removeWaiter()
-	return nil
-}
-
-func setWaiter(waitSeconds int) error {
-	path := getWaiterFilePath()
-	waitUntil := time.Now().Add(time.Duration(waitSeconds) * time.Second)
-	return os.WriteFile(path, []byte(waitUntil.Format(time.RFC3339)), 0644)
-}
-
-func removeWaiter() error {
-	path := getWaiterFilePath()
-	err := os.Remove(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
 }

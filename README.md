@@ -67,6 +67,7 @@ Configuration is managed through a `.env` file.
     - `OCI_MAX_INSTANCES`: (Optional, defaults to `1`) The maximum number of instances of this shape to allow before stopping.
     - `TELEGRAM_BOT_API_KEY`: (Optional) Your Telegram Bot API key for notifications.
     - `TELEGRAM_USER_ID`: (Optional) Your Telegram User/Chat ID for notifications.
+    - `OCI_JSON_LOG_PATH`: (Optional) Path to a file for logging API responses in JSON format. It logs all instance creation attempts (success or failure) and any other failed API calls. Example: `/var/log/oahc-go/api.log`. Note: Ensure the running user has write permissions to the specified path.
 
 ## Running the Script
 
