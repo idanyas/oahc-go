@@ -1,13 +1,10 @@
-version: '3.8'
+# Build Stage
+FROM golang:1.24-alpine AS builder
+WORKDIR /app
+COPY . .
+RUN CGO_ENABLED=0 go build -o /oahc-go .
 
-services:
-  oahc-go:
-    build: .
-    env_file:
-      - ./.env
-    volumes:
-      # Mount OCI private key. Path inside container must match OCI_PRIVATE_KEY_FILENAME in .env
-      - ./oci_api_key.pem:/app/oci_api_key.pem
-
-      # Mount local directory for JSON logs.
-      - ./logs:/var/log/oahc-go
+# Final Stage
+FROM alpine:latest
+COPY --from=builder /oahc-go /oahc-go
+ENTRYPOINT ["/oahc-go"]
