@@ -148,6 +148,7 @@ You now have all the information needed. Let's fill out the project's environmen
 | `OCI_PRIVATE_KEY_FILENAME`| Path inside the container. The `compose.yaml` maps your local key to this path. **Should be `/app/oci_api_key.pem`**. | ✅ |
 | `OCI_SUBNET_ID` | An OCID from Step 3. | ✅ |
 | `OCI_IMAGE_ID` | An OCID from Step 3. | ✅ |
+| `OCI_SHAPE` | An instance shape. | ✅ |
 | `OCI_SSH_PUBLIC_KEY`| The **full content** of your public SSH key (`~/.ssh/id_rsa.pub`). | ✅ |
 | `OCI_AVAILABILITY_DOMAIN` | Specific AD to try. *Leave empty to try all*. | |
 | `TELEGRAM_BOT_API_KEY` | Your Telegram Bot API key for notifications. | |
