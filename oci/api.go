@@ -6,33 +6,56 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/idanyas/oahc-go/config"
 )
 
+// The target interval between requests to stay under 3 requests/minute.
+const requestInterval = 20 * time.Second
+
 // Client for OCI API.
 type Client struct {
-	cfg         *config.Config
-	signer      *Signer
-	httpClient  *http.Client
-	rateLimiter *RateLimiter
+	cfg             *config.Config
+	signer          *Signer
+	httpClient      *http.Client
+	lastRequestTime time.Time
+	pacerMutex      sync.Mutex
 }
 
 // NewClient creates a new OCI API client.
 func NewClient(cfg *config.Config, signer *Signer) *Client {
 	return &Client{
-		cfg:         cfg,
-		signer:      signer,
-		rateLimiter: NewRateLimiter(),
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		cfg:        cfg,
+		signer:     signer,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+		// Initialize lastRequestTime to a time in the past to allow the first request immediately.
+		lastRequestTime: time.Now().Add(-requestInterval),
 	}
+}
+
+// paceRequest ensures that requests are spaced out to avoid hitting rate limits.
+// It enforces a maximum of ~3 requests per minute.
+func (c *Client) paceRequest() {
+	c.pacerMutex.Lock()
+	defer c.pacerMutex.Unlock()
+
+	elapsed := time.Since(c.lastRequestTime)
+	if elapsed < requestInterval {
+		// Calculate how long to sleep.
+		sleepDuration := requestInterval - elapsed
+		// Add a small random jitter (0-2s) to avoid predictable patterns.
+		jitter := time.Duration(rand.Intn(2000)) * time.Millisecond
+		time.Sleep(sleepDuration + jitter)
+	}
+	// Mark the time of the current request.
+	c.lastRequestTime = time.Now()
 }
 
 // APIError represents a structured error from the OCI API.
@@ -48,7 +71,7 @@ func (e *APIError) Error() string {
 
 func (c *Client) buildAndDo(method, path string, queryParams url.Values, body interface{}) ([]byte, error) {
 	// Proactively wait to ensure we comply with rate limits before making the call.
-	c.rateLimiter.Wait()
+	c.paceRequest()
 
 	baseURL := fmt.Sprintf("https://iaas.%s.oraclecloud.com/20160918", c.cfg.Region)
 	if path == "/availabilityDomains/" {
