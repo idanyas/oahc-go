@@ -40,14 +40,14 @@ func main() {
 
 	// Main infinite loop to continuously check for capacity
 	for {
-		backoffManager.Wait()
-
 		instances, err := client.ListInstances()
 		if err != nil {
 			log.Printf("ERROR: Failed to list instances: %v. Retrying in 30s...", err)
 			time.Sleep(30 * time.Second)
 			continue
 		}
+		// A successful API call should reset the backoff state.
+		backoffManager.Reset()
 
 		existingInstances := 0
 		for _, instance := range instances {
@@ -67,6 +67,8 @@ func main() {
 			time.Sleep(30 * time.Second)
 			continue
 		}
+		// A successful API call should reset the backoff state.
+		backoffManager.Reset()
 
 		tmrHitInCycle := false
 		for _, ad := range availabilityDomains {
@@ -78,15 +80,18 @@ func main() {
 						log.Printf("Checking %s: Too Many Requests.", ad)
 						tmrHitInCycle = true
 						backoffManager.HandleTMR()
+						// Break the inner loop and start a new cycle after the backoff period.
 						break
 					}
 					if apiErr.StatusCode == 500 && strings.Contains(apiErr.Message, "Out of host capacity") {
 						log.Printf("Checking %s: Out of capacity.", ad)
+						backoffManager.Reset() // This wasn't a TMR error.
 						continue
 					}
 				}
 				log.Printf("Checking %s: Unrecoverable API Error: %v", ad, err)
-				tmrHitInCycle = true
+				tmrHitInCycle = true // Treat other API errors like a TMR to pause.
+				backoffManager.HandleTMR()
 				break
 			}
 
@@ -116,8 +121,6 @@ func main() {
 		// After trying all ADs, reset backoff if no TMR was hit.
 		if !tmrHitInCycle {
 			backoffManager.Reset()
-			// Add a minimal pacing delay to prevent tight-looping when capacity is simply unavailable.
-			time.Sleep(2 * time.Second)
 		}
 	}
 }

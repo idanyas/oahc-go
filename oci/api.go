@@ -17,16 +17,18 @@ import (
 
 // Client for OCI API.
 type Client struct {
-	cfg        *config.Config
-	signer     *Signer
-	httpClient *http.Client
+	cfg         *config.Config
+	signer      *Signer
+	httpClient  *http.Client
+	rateLimiter *RateLimiter
 }
 
 // NewClient creates a new OCI API client.
 func NewClient(cfg *config.Config, signer *Signer) *Client {
 	return &Client{
-		cfg:    cfg,
-		signer: signer,
+		cfg:         cfg,
+		signer:      signer,
+		rateLimiter: NewRateLimiter(),
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -45,6 +47,9 @@ func (e *APIError) Error() string {
 }
 
 func (c *Client) buildAndDo(method, path string, queryParams url.Values, body interface{}) ([]byte, error) {
+	// Proactively wait to ensure we comply with rate limits before making the call.
+	c.rateLimiter.Wait()
+
 	baseURL := fmt.Sprintf("https://iaas.%s.oraclecloud.com/20160918", c.cfg.Region)
 	if path == "/availabilityDomains/" {
 		baseURL = fmt.Sprintf("https://identity.%s.oraclecloud.com/20160918", c.cfg.Region)

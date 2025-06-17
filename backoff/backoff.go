@@ -7,52 +7,40 @@ import (
 	"github.com/idanyas/oahc-go/config"
 )
 
-// Manager handles in-memory exponential backoff state.
+// Manager handles the stateful backoff logic after a 429 error.
 type Manager struct {
-	initialDelay time.Duration
-	maxDelay     time.Duration
-	currentDelay time.Duration
-	waitUntil    time.Time
+	lastWasTMR bool
 }
 
 // NewManager creates a new backoff state manager.
 func NewManager(cfg *config.Config) *Manager {
-	initial := time.Duration(cfg.BackoffInitialSeconds) * time.Second
 	return &Manager{
-		initialDelay: initial,
-		maxDelay:     time.Duration(cfg.BackoffMaxSeconds) * time.Second,
-		currentDelay: initial,
-		waitUntil:    time.Now(),
-	}
-}
-
-// Wait checks the backoff state and sleeps if necessary.
-func (m *Manager) Wait() {
-	waitDuration := time.Until(m.waitUntil)
-	if waitDuration > 0 {
-		log.Printf("Backoff activated, sleeping for %v.", waitDuration.Round(time.Second))
-		time.Sleep(waitDuration)
+		lastWasTMR: false,
 	}
 }
 
 // HandleTMR is called when a "Too Many Requests" error occurs.
-// It doubles the delay and sets the wait time for the next cycle.
+// It sleeps for 20s on the first TMR, and 40s on subsequent consecutive TMRs.
 func (m *Manager) HandleTMR() {
-	// Set the time to wait based on the *current* delay
-	m.waitUntil = time.Now().Add(m.currentDelay)
+	var sleepDuration time.Duration
 
-	// Calculate the next delay for the *next* time TMR is hit.
-	m.currentDelay *= 2
-	if m.currentDelay > m.maxDelay {
-		m.currentDelay = m.maxDelay
+	if m.lastWasTMR {
+		// This is a consecutive 429, back off for 40s.
+		sleepDuration = 40 * time.Second
+	} else {
+		// This is the first 429 in a sequence, back off for 20s.
+		sleepDuration = 20 * time.Second
 	}
+
+	log.Printf("Backoff activated, sleeping for %v.", sleepDuration)
+	time.Sleep(sleepDuration)
+
+	// Set the state for the next potential error.
+	m.lastWasTMR = true
 }
 
-// Reset brings the backoff state to its initial aggressive setting.
+// Reset clears the backoff state, ensuring the next TMR uses the initial 20s wait.
+// This should be called after any successful API call or a full loop without a TMR.
 func (m *Manager) Reset() {
-	if m.currentDelay > m.initialDelay {
-		// log.Println("Resetting backoff state to be aggressive.")
-		m.currentDelay = m.initialDelay
-	}
-	m.waitUntil = time.Now()
+	m.lastWasTMR = false
 }
